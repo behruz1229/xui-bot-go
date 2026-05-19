@@ -1,0 +1,63 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Позволяет запускать вручную из вкладки Actions
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22' # Укажите версию, совпадающую с вашей локальной (go version)
+
+      - name: 📦 Build Linux Binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o xui-bot ./cmd/bot
+
+      - name: 📤 Upload to VPS (SCP)
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "xui-bot"
+          target: "/tmp/xui-bot.new"
+          overwrite: true
+
+      - name: 🔄 Deploy & Restart via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            echo "🔄 Подготовка бинарника..."
+            chmod +x /tmp/xui-bot.new
+            
+            echo "🛑 Остановка текущего бота..."
+            sudo systemctl stop xui-bot
+            
+            echo "📦 Замена файла..."
+            sudo mv /tmp/xui-bot.new /opt/xui-bot/xui-bot
+            sudo chmod 755 /opt/xui-bot/xui-bot
+            
+            echo "🚀 Запуск новой версии..."
+            sudo systemctl start xui-bot
+            sleep 2
+            
+            if sudo systemctl is-active --quiet xui-bot; then
+              echo "✅ Деплой успешен! Бот работает."
+            else
+              echo "❌ Сервис не запустился. Проверяем логи..."
+              sudo journalctl -u xui-bot -n 30 --no-pager
+              exit 1
+            fi
